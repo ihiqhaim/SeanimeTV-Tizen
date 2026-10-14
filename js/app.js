@@ -304,7 +304,15 @@
         torrentInfo: null,        // latest numbers from the server's torrentstream events
         loadingSince: 0,
         bufferingPercent: 0,
-        transcoding: false        // the current playback goes through the server's transcoder
+        transcoding: false,        // the current playback goes through the server's transcoder
+        // P0 phases
+        libFilter: 'ALL',            // ALL | CURRENT | PLANNING | COMPLETED | PAUSED | DROPPED | REPEATING
+        libSearch: '',
+        libSort: 'updated',          // updated | title | score | progress
+        libCustom: [],               // custom lists from /anilist/collection
+        discPage: 1,
+        discTotal: 0,
+        discFilters: { genre: '', format: '', status: '', sort: 'POPULARITY_DESC', year: '' }
     };
 
     var heroState = { items: [], currentIndex: 0, rotationTimer: null };
@@ -979,6 +987,8 @@
                         if (entry && typeof entry === 'object') {
                             entry._listType = list.type;
                             entry._listStatus = list.status;
+                            if (entry.updatedAt == null && entry.updated_at != null) entry.updatedAt = entry.updated_at;
+                            if (entry.media && entry.media.updatedAt == null && entry.media.updated_at != null) entry.media.updatedAt = entry.media.updated_at;
                             out.push(entry);
                         }
                     });
@@ -1018,8 +1028,7 @@
         return [];
     }
 
-    // Adult and suggestive content is always hidden. AniList flags adult
-    // titles with isAdult; the "Hentai" and "Ecchi" genres are checked too.
+    // Adult/suggestive content is permanently hidden (no toggle). AniList isAdult + Hentai/Ecchi genres.
     var BLOCKED_GENRES = ['hentai', 'ecchi'];
     function isAdultMedia(m) {
         if (!m) return false;
@@ -1084,6 +1093,12 @@
         if (typeof raw.currentTime === 'number') progress = raw.currentTime;
         if (typeof raw.duration === 'number') duration = raw.duration;
 
+        var updatedAt = null;
+        if (typeof raw.updatedAt === 'number') updatedAt = raw.updatedAt;
+        else if (typeof raw.updated_at === 'number') updatedAt = raw.updated_at;
+        else if (typeof media.updatedAt === 'number') updatedAt = media.updatedAt;
+        else if (typeof raw.mediaId === 'number' && typeof raw._updatedAt === 'number') updatedAt = raw._updatedAt;
+
         return {
             mediaId: media.id || media.mediaId || raw.mediaId,
             title: extractTitleText(media.title || raw.title),
@@ -1105,6 +1120,7 @@
             duration: duration,
             listData: listData,
             _listType: raw._listType || (listData && listData.status) || '',
+            updatedAt: updatedAt,
             _raw: raw
         };
     }
@@ -1163,7 +1179,11 @@
                 }
                 return options.text ? response.text() : response.json();
             }).catch(function (error) {
-                console.error('[API] ' + endpoint + ':', error);
+                // Probe endpoints (Queue/Profile) intentionally 404 on Seanime 3.10.3:
+                // suppress inspector spam – hand off to caller via DEBUG only.
+                var isProbe = options.silent404 && error && error.message && error.message.indexOf('404') >= 0;
+                if (isProbe) { DEBUG && console.log('[API probe 404] ' + endpoint); }
+                else { console.error('[API] ' + endpoint + ':', error); }
                 if (!/^HTTP \d+/.test(error && error.message || '')) setConnectionStatus(false);   // network error
                 throw error;
             });
@@ -1359,6 +1379,16 @@
                 method: 'PATCH',
                 body: JSON.stringify({ options: opts })
             }).catch(function (e) { console.warn('[Continuity] save failed (non-fatal):', e); });
+        },
+        // P0 – Queue + Profile (Seanime 3.10.3 has NO such routes – stubs only, no 404 spam)
+        getActiveTorrents: function () {
+            DEBUG && console.log('[API] getActiveTorrents: no server route (Seanime 3.10.3) → []');
+            return Promise.resolve([]);
+        },
+        getQueue: function () { return this.getActiveTorrents(); },
+        getViewer: function () {
+            DEBUG && console.log('[API] getViewer: no server route (Seanime 3.10.3) → null');
+            return Promise.resolve(null);
         }
     };
 
@@ -1455,15 +1485,45 @@
     function homeNavRows() {
         var area = state.view === 'discover' ? $('#discover-area')
                  : state.view === 'schedule' ? $('#schedule-area')
+                 : state.view === 'queue' ? $('#queue-area')
+                 : state.view === 'profile' ? $('#profile-area')
                  : $('#content-area');
         var rows = [];
         if (!area) return rows;
-        var nodes = area.querySelectorAll('#hero-play-btn, .card-row');
+        // Discover filters + all rows. Filters are first so UP from first Discover card lands on them.
+        if (state.view === 'discover') {
+            var df = area.querySelectorAll('#discover-filters .df-chip');
+            if (df && df.length) {
+                var fRow = [];
+                for (var fi = 0; fi < df.length; fi++) fRow.push(df[fi]);
+                rows.push(fRow);
+            }
+        }
+        var nodes = area.querySelectorAll('#hero-play-btn, .card-row, .cast-row, #queue-rows, #profile-card, #profile-stats');
         for (var i = 0; i < nodes.length; i++) {
             var n = nodes[i], items = [];
             if (n.id === 'hero-play-btn') {
                 if (n.style.display === 'none') continue;
                 items.push(n);
+            } else if (n.id === 'queue-rows') {
+                for (var j = 0; j < n.children.length; j++) {
+                    if (n.children[j].classList.contains('queue-item')) items.push(n.children[j]);
+                }
+            } else if (n.id === 'profile-card' || n.id === 'profile-stats') {
+                if (n.children.length) {
+                    for (var k = 0; k < n.children.length; k++) {
+                        var c = n.children[k];
+                        if (c.tabIndex >= 0 || c.querySelector('[tabindex]')) {
+                            var focusable = c.tabIndex >= 0 ? c : c.querySelector('[tabindex]');
+                            if (focusable) items.push(focusable);
+                        }
+                    }
+                    if (!items.length && n.offsetWidth) items.push(n);
+                }
+            } else if (n.classList.contains('cast-row')) {
+                for (var j = 0; j < n.children.length; j++) {
+                    if (n.children[j].classList.contains('cast-card')) items.push(n.children[j]);
+                }
             } else {
                 for (var j = 0; j < n.children.length; j++) {
                     if (n.children[j].classList.contains('anime-card')) items.push(n.children[j]);
@@ -1497,13 +1557,22 @@
 
         // LEFT/RIGHT along a row (the key that gets held down) needs only the neighbouring card.
         // The general code below scans every card on the page and forces a layout per row.
-        if ((keyCode === K.LEFT || keyCode === K.RIGHT) && active.classList.contains('anime-card') &&
-            active.parentNode && active.parentNode.classList.contains('card-row')) {
+        // Extended to anime-card + cast-card + queue-item (Bug 1).
+        var activeCls = active.classList.contains('anime-card') ? 'anime-card'
+                      : active.classList.contains('cast-card') ? 'cast-card'
+                      : active.classList.contains('queue-item') ? 'queue-item'
+                      : active.classList.contains('df-chip') ? 'df-chip' : null;
+        var activeInRow = activeCls && active.parentNode &&
+                         (active.parentNode.classList.contains('card-row') ||
+                          active.parentNode.id === 'discover-filters' ||
+                          active.parentNode.classList.contains('cast-row') ||
+                          active.parentNode.id === 'queue-rows');
+        if ((keyCode === K.LEFT || keyCode === K.RIGHT) && activeCls && activeInRow) {
             e.preventDefault();
-            var step = keyCode === K.RIGHT ? 'nextElementSibling' : 'previousElementSibling';
-            var sib = active[step];
-            while (sib && !sib.classList.contains('anime-card')) sib = sib[step];
-            if (sib) sib.focus();
+            var stepH = keyCode === K.RIGHT ? 'nextElementSibling' : 'previousElementSibling';
+            var sibH = active[stepH];
+            while (sibH && !sibH.classList.contains(activeCls)) sibH = sibH[stepH];
+            if (sibH) sibH.focus();
             return true;
         }
 
@@ -1526,10 +1595,23 @@
             return true;
         }
 
+        // Detect UP from the "Recently Added" row (index 1 when hero is row 0) and go to hero instead of header
         var nr = r + (keyCode === K.DOWN ? 1 : -1);
         if (nr < 0) {                      // above the first row -> header tab of the current view
+            // Home: the row below header is the hero. If we're on the first card-row (Recently Added) and
+            // the hero exists, go to hero rather than straight to header.
+            if (state.view === 'home' && r === 1) {
+                var hero = $('#hero-play-btn');
+                if (hero && hero.style.display !== 'none' && hero.offsetWidth) {
+                    hero.focus();
+                    if (hero.scrollIntoView) { try { hero.scrollIntoView({ block: 'nearest' }); } catch (e3) {} }
+                    return true;
+                }
+            }
             var tab = $(state.view === 'discover' ? '#nav-discover' :
-                        state.view === 'schedule' ? '#nav-schedule' : '#nav-home');
+                        state.view === 'schedule' ? '#nav-schedule' :
+                        state.view === 'queue' ? '#nav-queue' :
+                        state.view === 'profile' ? '#nav-profile' : '#nav-home');
             if (tab) tab.focus();
             var area = state.view === 'discover' ? $('#discover-area') :
                        state.view === 'schedule' ? $('#schedule-area') : $('#content-area');
@@ -1540,6 +1622,11 @@
         var target = closestInRow(rows[nr], active);
         target.focus();
         if (target.id === 'hero-play-btn') $('#content-area').scrollTop = 0;
+        // keep the row's container scrolled into view (queue/profile have no hero)
+        var container = target && target.parentNode;
+        if (container && container.scrollIntoView) {
+            try { container.scrollIntoView({ block: 'nearest' }); } catch (e2) {}
+        }
         return true;
     }
 
@@ -2069,14 +2156,78 @@
         return card;
     }
 
-    function renderLibrary(list) {
+    // Library: Recently Added (sorted by updatedAt desc, most recent first; falls back to reverse insertion)
+    function renderLibraryToolbar() {} // no-op: filters removed per request
+    function tsOf(x) {
+        if (!x) return 0;
+        var v = x.updatedAt;
+        if (v == null && x._raw) v = x._raw.updatedAt != null ? x._raw.updatedAt : x._raw.updated_at;
+        if (v == null && x._raw && x._raw.media) v = x._raw.media.updatedAt != null ? x._raw.media.updatedAt : x._raw.media.updated_at;
+        if (v == null) return 0;
+        if (typeof v === 'number') return v > 1e12 ? Math.floor(v / 1000) : v; // ms -> s
+        if (typeof v === 'string') { var t = Date.parse(v); return t ? Math.floor(t / 1000) : 0; }
+        return 0;
+    }
+    function libraryFilteredList() {
+        var src = state.library || [];
+        // tag insertion order once per render so fallback ordering is stable
+        for (var oi = 0; oi < src.length; oi++) src[oi]._order = oi;
+        var list = src.slice();
+        var anyTs = false;
+        for (var ii = 0; ii < list.length; ii++) if (tsOf(list[ii])) { anyTs = true; break; }
+        if (!anyTs) { list.reverse(); return list; }
+        list.sort(function (a, b) {
+            var ta = tsOf(a), tb = tsOf(b);
+            if (tb !== ta) return tb - ta;
+            // second key: reverse insertion (newest push = last in source array)
+            var oa = a._order != null ? a._order : 0, ob = b._order != null ? b._order : 0;
+            if (ob !== oa) return ob - oa;
+            return (a.title || '').localeCompare(b.title || '');
+        });
+        return list;
+    }
+    function renderLibraryFiltered() {
         var row = $('#library-row');
+        if (!row) return;
         row.innerHTML = '';
-        if (!list || list.length === 0) {
-            row.innerHTML = '<p style="color:#8888aa;font-size:18px;">Your library is empty. Add anime to your Seanime library to see them here.</p>';
+        var list = libraryFilteredList();
+        if (!list.length) {
+            row.innerHTML = '<p class="empty-note">Your library is empty.</p>';
             return;
         }
-        appendCardBatch(row, list, 0);     // 30 at a time: "+N more" loads the rest
+        appendCardBatch(row, list, 0);
+    }
+    function renderCustomLists() {
+        var host = $('#custom-lists');
+        if (!host) return;
+        host.innerHTML = '';
+        (state.libCustom || []).forEach(function (list) {
+            if (!list || !list.entries || !list.entries.length) return;
+            var section = document.createElement('section');
+            section.className = 'content-section';
+            var title = document.createElement('h2');
+            title.className = 'section-title';
+            title.textContent = list.name || 'Custom';
+            var cnt = document.createElement('span');
+            cnt.className = 'section-count';
+            cnt.textContent = String(list.entries.length);
+            title.appendChild(cnt);
+            var row = document.createElement('div');
+            row.className = 'card-row';
+            section.appendChild(title); section.appendChild(row);
+            host.appendChild(section);
+            var items = list.entries.map(function (entry) {
+                return normalizeAnime({ media: entry.media, listData: { status: entry.status || list.status, progress: entry.progress || 0 } });
+            }).filter(function (x) { return x && x.mediaId; });
+            appendCardBatch(row, items, 0);
+        });
+    }
+    function renderLibrary(list) {
+        // backward compat: called with raw list from loader
+        if (list) state.library = list;
+        renderLibraryToolbar();
+        renderLibraryFiltered();
+        renderCustomLists();
     }
 
     // Large lists are rendered in batches (a "+N more" card loads the next batch)
@@ -2202,10 +2353,14 @@
     function loadStatusSections() {
         return api.getAnimeCollection().then(function (lists) {
             DEBUG && console.log('[API] AniList collection lists:', lists.length);
-            // remember the AniList progress of every entry so we never lower it
             var map = {}, entries = {}, blocked = {};
+            var customs = [];
             lists.forEach(function (list) {
-                if (!list || list.isCustomList) return;
+                if (list.isCustomList) {
+                    if (list.entries && list.entries.length) customs.push(list);
+                    return;
+                }
+                if (!list.status) return;
                 (list.entries || []).forEach(function (en) {
                     if (en && en.media && en.media.id) {
                         if (isAdultMedia(en.media)) blocked[en.media.id] = true;
@@ -2214,11 +2369,14 @@
                     }
                 });
             });
+            state.libCustom = customs;
             state.listProgress = map;
             state.listEntries = entries;
             state.blockedIds = blocked;
             state.listProgressLoaded = true;
             renderStatusSections(lists);
+            renderCustomLists();
+            renderLibraryToolbar();
         }).catch(function (e) {
             console.warn('[API] AniList collection failed:', e);
         });
@@ -2392,15 +2550,63 @@
         });
     }
 
+    // P0.3 - Detail helpers: cast/staff/relations/characters
+    function renderCastRow(containerId, titleId, items, kind) {
+        var row = $('#' + containerId), ttl = $('#' + titleId);
+        if (!row || !ttl) return;
+        row.innerHTML = '';
+        if (!items || !items.length) { ttl.style.display = 'none'; return; }
+        ttl.style.display = '';
+        items.slice(0, 16).forEach(function (it) {
+            var card = document.createElement('div');
+            card.className = 'cast-card'; card.tabIndex = 0;
+            var img = document.createElement('img');
+            img.alt = it.name || '';
+            lazyImage(img, it.image || '');
+            var info = document.createElement('div');
+            info.className = 'cast-info';
+            var name = document.createElement('div'); name.className = 'cast-name'; name.textContent = it.name || 'Unknown';
+            var role = document.createElement('div'); role.className = 'cast-role'; role.textContent = it.role || it.character || '';
+            info.appendChild(name); if (role.textContent) info.appendChild(role);
+            card.appendChild(img); card.appendChild(info);
+            row.appendChild(card);
+        });
+    }
+    function loadDetailMeta(mediaId) {
+        return api.getMediaDetails(mediaId).then(function (details) {
+            if (!state.detail || state.detail.mediaId !== mediaId || !details) return null;
+            return details;
+        });
+    }
+    function renderRelations(mediaId, details) {
+        var edges = (details && details.relations && details.relations.edges) || [];
+        var nodes = [];
+        edges.forEach(function (e) {
+            var m = e && e.node;
+            if (!m || !m.id || m.id === mediaId) return;
+            if (m.isAdult) return;
+            var a = normalizeAnime(m);
+            if (a) { a.relationType = e.relationType || ''; nodes.push(a); }
+        });
+        var row = $('#detail-relations'), ttl = $('#relations-title');
+        if (!row || !ttl) return;
+        row.innerHTML = '';
+        if (!nodes.length) { ttl.style.display = 'none'; return; }
+        ttl.style.display = '';
+        appendCardBatch(row, nodes.slice(0, 20), 0);
+    }
+
     function openAnimeDetail(anime, isBack) {
         var mediaId = anime.mediaId;
-        // detail -> detail (a recommendation): remember where we came from for BACK
         if (!isBack) {
             if (state.currentScreen === 'detail' && state.detail) state.detailStack.push(state.detail.anime);
             else state.detailStack = [];
         }
         $('#recs-title').style.display = 'none';
         $('#detail-recs').innerHTML = '';
+        $('#cast-title').style.display = 'none'; $('#detail-cast').innerHTML = '';
+        $('#staff-title').style.display = 'none'; $('#detail-staff').innerHTML = '';
+        $('#relations-title').style.display = 'none'; $('#detail-relations').innerHTML = '';
         state.currentAnime = anime;
         state.detail = { mediaId: mediaId, anime: anime, entryListData: null, entryLoaded: false, studios: '', playTarget: 1 };
         closeListPanel(true);
@@ -2434,13 +2640,12 @@
             updateDetailActions();
         });
 
-        // studio (best effort)
         api.getMediaDetails(mediaId).then(function (details) {
             if (!state.detail || state.detail.mediaId !== mediaId || !details) return;
             var nodes = (details.studios && details.studios.nodes) || [];
             state.detail.studios = nodes.slice(0, 2).map(function (n) { return n.name; }).join(', ');
             if (enrichAnimeFromDetails(anime, details)) {
-                if (isAdultMedia({ genres: anime.genres })) {            // opened from somewhere that could not check
+                if (isAdultMedia({ genres: anime.genres })) {
                     showAppToast('This title is hidden');
                     state.detailStack = [];
                     showScreen('home');
@@ -2451,6 +2656,25 @@
             }
             renderDetailMeta();
             loadRecommendations(mediaId, details);
+            renderRelations(mediaId, details);
+            // characters
+            var chars = (details.characters && details.characters.edges) || [];
+            var cast = [];
+            chars.slice(0, 16).forEach(function (e) {
+                var ch = e && e.node, va = e && e.voiceActors && e.voiceActors[0];
+                if (!ch) return;
+                cast.push({ name: ch.name && (ch.name.full || ch.name.userPreferred) || 'Unknown', role: ch.role || e.role || '', image: ch.image && (ch.image.large || ch.image.medium) || (va && va.image && va.image.large) || '' });
+            });
+            renderCastRow('detail-cast', 'cast-title', cast);
+            // staff
+            var staffEdges = (details.staff && details.staff.edges) || [];
+            var staff = [];
+            staffEdges.slice(0, 12).forEach(function (e) {
+                var s = e && e.node;
+                if (!s) return;
+                staff.push({ name: s.name && (s.name.full || s.name.userPreferred) || 'Unknown', role: e.role || '', image: s.image && (s.image.large || s.image.medium) || '' });
+            });
+            renderCastRow('detail-staff', 'staff-title', staff);
         }).catch(function () {});
     }
 
@@ -2562,13 +2786,25 @@
     function playDetailTarget() {
         var d = state.detail;
         if (!d) return;
-        var info = null;
-        detailEpisodes().forEach(function (ep, i) {
-            if ((ep.episodeNumber || ep.number || (i + 1)) === d.playTarget) info = ep;
+        ensureEpisodes(d.anime).then(function () {
+            var episodes = detailEpisodes();
+            var info = null;
+            episodes.forEach(function (ep, i) {
+                if ((ep.episodeNumber || ep.number || (i + 1)) === d.playTarget) info = ep;
+            });
+            if (!info && episodes.length) {
+                // fallback: first episode if playTarget not found (metadata still loading)
+                info = episodes[d.playTarget - 1] || episodes[0];
+            }
+            state.playbackOrigin = 'detail';
+            state.currentAnime = d.anime;
+            playEpisodeAuto(d.anime, (info && (info.episodeNumber || info.number)) || d.playTarget, info || { aniDBEpisode: null });
+        }).catch(function () {
+            // episodes failed to load but still try torrent search with playTarget number
+            state.playbackOrigin = 'detail';
+            state.currentAnime = d.anime;
+            playEpisodeAuto(d.anime, d.playTarget, { aniDBEpisode: null });
         });
-        state.playbackOrigin = 'detail';
-        state.currentAnime = d.anime;
-        playEpisodeAuto(d.anime, d.playTarget, info || {});
     }
 
     // ----- My list editor -----
@@ -2748,6 +2984,25 @@
             return true;
         }
 
+        // Cast / Staff quick LEFT/RIGHT inside their row (cast-card)
+        var actCast = document.activeElement;
+        if (actCast && actCast.classList && actCast.classList.contains('cast-card')) {
+            if (keyCode === K.LEFT || keyCode === K.RIGHT) {
+                e.preventDefault();
+                var st = keyCode === K.RIGHT ? 'nextElementSibling' : 'previousElementSibling';
+                var sibC = actCast[st];
+                while (sibC && !sibC.classList.contains('cast-card')) sibC = sibC[st];
+                if (sibC) sibC.focus();
+                return true;
+            }
+            if (keyCode === K.UP || keyCode === K.DOWN) {
+                // fall through to grid navigation below
+            } else {
+                e.preventDefault();
+                return true;
+            }
+        }
+
         // Episode rows: move between neighbours instead of rebuilding a grid of every episode
         // on each key press (a long series has hundreds).
         var act = document.activeElement;
@@ -2757,7 +3012,13 @@
                 var nb = keyCode === K.DOWN ? act.nextElementSibling : act.previousElementSibling;
                 if (!nb && keyCode === K.DOWN && appendEpisodeBatch()) nb = act.nextElementSibling;
                 if (nb) nb.focus();
-                else if (keyCode === K.DOWN) { var rc = $('#detail-recs .anime-card'); if (rc) rc.focus(); }
+                else if (keyCode === K.DOWN) {
+                    var nextCast = document.querySelector('#detail-cast .cast-card');
+                    var nextRel = document.querySelector('#detail-relations .anime-card');
+                    var nextRec = document.querySelector('#detail-recs .anime-card');
+                    var nxt = nextCast || nextRel || nextRec;
+                    if (nxt) nxt.focus();
+                }
                 else { $('#detail-play').focus(); $('#detail-content').scrollTop = 0; }
                 return true;
             }
@@ -2778,6 +3039,22 @@
         var items = document.querySelectorAll('#episode-list .episode-item');
         for (var n = 0; n < items.length; n++) grid.push([items[n]]);
         var epRows = items.length;
+        // Bug 4: include cast/staff (cast-row) and relations/recs (card-row) so D-pad UP/DOWN traverses them
+        var castCards = document.querySelectorAll('#detail-cast .cast-card');
+        if (castCards.length) {
+            var cr = []; for (var qc = 0; qc < castCards.length; qc++) cr.push(castCards[qc]);
+            grid.push(cr);
+        }
+        var staffCards = document.querySelectorAll('#detail-staff .cast-card');
+        if (staffCards.length) {
+            var sr = []; for (var qs = 0; qs < staffCards.length; qs++) sr.push(staffCards[qs]);
+            grid.push(sr);
+        }
+        var relCards = document.querySelectorAll('#detail-relations .anime-card');
+        if (relCards.length) {
+            var relRow = []; for (var qr = 0; qr < relCards.length; qr++) relRow.push(relCards[qr]);
+            grid.push(relRow);
+        }
         var recs = document.querySelectorAll('#detail-recs .anime-card');
         if (recs.length) {
             var recRow = [];
@@ -5084,11 +5361,17 @@
         $('#content-area').style.display = view === 'home' ? '' : 'none';
         $('#discover-area').style.display = view === 'discover' ? '' : 'none';
         $('#schedule-area').style.display = view === 'schedule' ? '' : 'none';
+        $('#queue-area').style.display = view === 'queue' ? '' : 'none';
+        $('#profile-area').style.display = view === 'profile' ? '' : 'none';
         $('#nav-home').className = 'nav-btn' + (view === 'home' ? ' active' : '');
         $('#nav-discover').className = 'nav-btn' + (view === 'discover' ? ' active' : '');
         $('#nav-schedule').className = 'nav-btn' + (view === 'schedule' ? ' active' : '');
+        $('#nav-queue').className = 'nav-btn' + (view === 'queue' ? ' active' : '');
+        $('#nav-profile').className = 'nav-btn' + (view === 'profile' ? ' active' : '');
         if (view === 'discover') loadDiscover(false);
         if (view === 'schedule') loadSchedule(false);
+        if (view === 'queue') loadQueue();
+        if (view === 'profile') loadProfile();
         imgSchedule(60);
     }
 
@@ -5193,6 +5476,83 @@
         if (upcoming && upcoming.scrollIntoView) { /* focus handling stays with the remote */ }
     }
 
+    // P0 – Queue + Profile helpers (server has no /queue or /viewer route)
+    function renderQueue(items) {
+        var note = $('#queue-note');
+        var host = $('#queue-rows');
+        if (!host) return;
+        host.innerHTML = '';
+        if (note) note.style.display = 'none';
+        if (!items || !items.length) {
+            if (note) { note.textContent = 'No queue on this server. Manage torrents from Seanime web/desktop.'; note.style.display = ''; }
+            else host.innerHTML = '<p class="empty-note">No queue on this server.</p>';
+            return;
+        }
+        items.forEach(function (it) {
+            var row = document.createElement('div');
+            row.className = 'queue-item'; row.tabIndex = 0;
+            var title = document.createElement('span'); title.textContent = it.name || it.torrentName || 'Torrent';
+            var meta = document.createElement('span'); meta.textContent = (it.progress != null ? Math.round(it.progress) + '%' : '') + (it.state ? '  \u00B7  ' + it.state : '');
+            row.appendChild(title); row.appendChild(meta);
+            host.appendChild(row);
+        });
+    }
+    function renderProfile(viewer) {
+        var note = $('#profile-note'), card = $('#profile-card'), stats = $('#profile-stats');
+        if (note) note.style.display = 'none';
+        if (!viewer) {
+            if (note) { note.textContent = 'Profile is not available from this Seanime server. View your anime list on AniList or in Seanime web/desktop.'; note.style.display = ''; }
+            else if (card) card.innerHTML = '<p class="empty-note">Profile not available on this server.</p>';
+            if (stats) stats.innerHTML = '';
+            return;
+        }
+        var u = viewer.User || viewer.user || viewer;
+        var s = u.statistics && u.statistics.anime;
+        if (card) {
+            card.innerHTML = '';
+            var wrap = document.createElement('div'); wrap.className = 'profile-card';
+            var img = document.createElement('img'); img.alt = u.name || ''; img.src = (u.avatar && (u.avatar.large || u.avatar.medium)) || '';
+            var name = document.createElement('div'); name.innerHTML = '<div style="font-size:28px;font-weight:700">' + (u.name || '') + '</div>';
+            wrap.appendChild(img); wrap.appendChild(name); card.appendChild(wrap);
+        }
+        if (stats && s) {
+            stats.innerHTML = '';
+            var row = document.createElement('div'); row.className = 'profile-stats';
+            [['Count', s.count], ['Minutes', s.minutesWatched], ['Mean', s.meanScore]].forEach(function (p) {
+                var box = document.createElement('div');
+                box.innerHTML = '<div class="profile-stat-val">' + (p[1] != null ? p[1] : '\u2014') + '</div><div class="profile-stat-label">' + p[0] + '</div>';
+                row.appendChild(box);
+            });
+            stats.appendChild(row);
+        }
+    }
+    function loadQueue() {
+        var note = $('#queue-note');
+        if (note) { note.textContent = 'Loading…'; note.style.display = ''; }
+        api.getQueue().then(function (items) { renderQueue(items); });
+    }
+    function loadQueue() {
+        renderQueue([]);
+    }
+    function loadProfile() {
+        // Seanime 3.10.3 exposes no AniList viewer endpoint – show local server info instead
+        var note = $('#profile-note');
+        if (note) note.style.display = 'none';
+        var card = $('#profile-card'), stats = $('#profile-stats');
+        if (stats) stats.innerHTML = '';
+        if (card) {
+            card.innerHTML = '';
+            var wrap = document.createElement('div'); wrap.className = 'profile-card';
+            var img = document.createElement('div');
+            img.style.width = '96px'; img.style.height = '96px'; img.style.borderRadius = '50%';
+            img.style.background = '#2a2a3a'; img.style.marginRight = '20px';
+            var name = document.createElement('div');
+            name.innerHTML = '<div style="font-size:22px;font-weight:700">' + (CONFIG.serverUrl || 'Seanime') + '</div><div style="font-size:16px;color:#8888aa;margin-top:6px;">' + (connectionOnline ? 'Online' : 'Offline') + ' · TV ' + (document.visibilityState || 'active') + '</div>';
+            wrap.appendChild(img); wrap.appendChild(name); card.appendChild(wrap);
+        }
+        if (note) { note.textContent = 'Full profile (AniList stats) is not served by this Seanime version. Open Seanime web/desktop or AniList.'; note.style.display = ''; }
+    }
+
     function loadSchedule(force) {
         if (!force && state.scheduleLoadedAt && Date.now() - state.scheduleLoadedAt < SCHEDULE_CACHE_MS) return;
         var seq = ++scheduleSeq;
@@ -5242,13 +5602,104 @@
         if (host) host.innerHTML = '';
     }
 
+    // P0.2 - Discover: full AniList explorer (all filters combinable via Seanime listAnime)
+    // Ecchi is NOT listed – adult titles are permanently hidden on this TV build.
+    var DISC_GENRES = ['Action','Adventure','Comedy','Drama','Fantasy','Sci-Fi','Romance','Slice of Life','Sports','Mystery','Horror','Supernatural','Mecha','Music','Thriller','Psychological'];
+    var DISC_FORMATS = [{ v: '', l: 'All formats' },{ v: 'TV', l: 'TV' },{ v: 'MOVIE', l: 'Movie' },{ v: 'OVA', l: 'OVA' },{ v: 'SPECIAL', l: 'Special' },{ v: 'TV_SHORT', l: 'TV Short' }];
+    var DISC_STATUS = [{ v: '', l: 'All status' },{ v: 'RELEASING', l: 'Airing' },{ v: 'FINISHED', l: 'Finished' },{ v: 'NOT_YET_RELEASED', l: 'Upcoming' },{ v: 'HIATUS', l: 'Hiatus' },{ v: 'CANCELLED', l: 'Cancelled' }];
+    var DISC_SORTS = [{ v: 'POPULARITY_DESC', l: 'Popular' },{ v: 'TRENDING_DESC', l: 'Trending' },{ v: 'SCORE_DESC', l: 'Top rated' },{ v: 'START_DATE_DESC', l: 'Newest' },{ v: 'FAVOURITES_DESC', l: 'Most favourited' }];
+    function renderDiscoverFilters() {
+        var host = $('#discover-filters');
+        if (!host) return;
+        host.innerHTML = '';
+        function group(label, opts, key) {
+            opts.forEach(function (o) {
+                var v = (typeof o === 'string') ? o : o.v;
+                var l = (typeof o === 'string') ? o : o.l;
+                var b = document.createElement('button');
+                b.className = 'df-chip' + (String(state.discFilters[key] || '') === String(v) ? ' active' : '');
+                b.tabIndex = 0; b.textContent = l;
+                b.addEventListener('click', function () { state.discFilters[key] = v; state.discPage = 1; renderDiscoverFilters(); loadDiscover(true); });
+                b.addEventListener('keydown', function (e) { if (e.keyCode === KEY_CODES.ENTER) { e.preventDefault(); b.click(); } });
+                host.appendChild(b);
+            });
+        }
+        group('genre', DISC_GENRES, 'genre');
+        group('format', DISC_FORMATS, 'format');
+        group('status', DISC_STATUS, 'status');
+        group('sort', DISC_SORTS, 'sort');
+        var y = new Date().getFullYear();
+        var years = [{ v: '', l: 'Any year' }];
+        for (var yy = y; yy >= 1995; yy--) years.push({ v: String(yy), l: String(yy) });
+        years.slice(0, 10).forEach(function (o) {
+            var b = document.createElement('button');
+            b.className = 'df-chip' + (String(state.discFilters.year || '') === String(o.v) ? ' active' : '');
+            b.tabIndex = 0; b.textContent = o.l;
+            b.addEventListener('click', function () { state.discFilters.year = o.v; state.discPage = 1; renderDiscoverFilters(); loadDiscover(true); });
+            host.appendChild(b);
+        });
+        // Reset row – last so keyboard nav can wrap to it quickly
+        var reset = document.createElement('button');
+        reset.className = 'df-chip'; reset.tabIndex = 0; reset.textContent = 'Reset filters';
+        reset.addEventListener('click', function () { state.discFilters = { genre: '', format: '', status: '', sort: 'POPULARITY_DESC', year: '' }; state.discPage = 1; renderDiscoverFilters(); loadDiscover(true); });
+        reset.addEventListener('keydown', function (e) { if (e.keyCode === KEY_CODES.ENTER) { e.preventDefault(); reset.click(); } });
+        host.appendChild(reset);
+    }
+    function discoverParamsForRow(def) {
+        var f = state.discFilters;
+        var p = {};
+        // global filters are combinable: genre+format+status+year+sort all at once
+        if (f.genre) p.genre = f.genre;
+        if (f.format) p.format = [f.format];
+        if (f.status) p.status = [f.status];
+        if (f.year) p.seasonYear = parseInt(f.year, 10);
+        var base = def.params();
+        for (var k in base) p[k] = base[k];
+        // row intrinsic sort wins; global sort only when row has no sort
+        if (f.sort && !base.sort) p.sort = [f.sort];
+        else if (f.sort && base.sort && f.sort !== base.sort[0]) {
+            // if global sort is explicitly chosen by user, override row sort (e.g. user taps "Score")
+            p.sort = [f.sort];
+        }
+        // adult permanently hidden: listAnime POST isAdult:false always
+        return p;
+    }
+    // Bug 8 mitigation: cache is bypassed when filters/page changed; paging label per page param
+    var _prevDiscoverKey = '';
+    function discoverCacheKey() {
+        var f = state.discFilters;
+        return [f.genre || '', f.format || '', f.status || '', f.sort || '', f.year || '', state.discPage].join('|');
+    }
+    function renderDiscoverPaging() {
+        var host = $('#discover-paging');
+        if (!host) return;
+        host.innerHTML = '';
+        var prev = document.createElement('button');
+        prev.className = 'pg-btn'; prev.tabIndex = 0; prev.textContent = 'Prev'; prev.disabled = state.discPage <= 1;
+        prev.addEventListener('click', function () { if (state.discPage > 1) { state.discPage--; loadDiscover(true); } });
+        prev.addEventListener('keydown', function (e) { if (e.keyCode === KEY_CODES.ENTER) { e.preventDefault(); prev.click(); } });
+        var label = document.createElement('span');
+        label.className = 'pg-label'; label.textContent = 'Page ' + state.discPage + ' \u00B7 all rows';
+        var next = document.createElement('button');
+        next.className = 'pg-btn'; next.tabIndex = 0; next.textContent = 'Next';
+        next.addEventListener('click', function () { state.discPage++; loadDiscover(true); });
+        next.addEventListener('keydown', function (e) { if (e.keyCode === KEY_CODES.ENTER) { e.preventDefault(); next.click(); } });
+        host.appendChild(prev); host.appendChild(label); host.appendChild(next);
+        // D-pad: focus first paging button when no discover card focused
+        var anyCard = document.querySelector('#discover-rows .anime-card');
+        if (!anyCard && prev && !prev.disabled) {
+            // leave focus on paging controls after a page change
+        }
+    }
     function loadDiscover(force) {
-        if (!force && state.discoverLoadedAt && Date.now() - state.discoverLoadedAt < DISCOVER_CACHE_MS) return;
+        var key = discoverCacheKey();
+        if (!force && state.discoverLoadedAt && Date.now() - state.discoverLoadedAt < DISCOVER_CACHE_MS && key === _prevDiscoverKey) return;
         var seq = ++state.discoverSeq;
         state.discoverLoadedAt = Date.now();
+        _prevDiscoverKey = key;
+        renderDiscoverFilters();
         var host = $('#discover-rows');
         host.innerHTML = '';
-
         DISCOVER_ROWS.forEach(function (def) {
             var section = document.createElement('section');
             section.className = 'content-section';
@@ -5261,10 +5712,11 @@
             section.appendChild(title);
             section.appendChild(row);
             host.appendChild(section);
-
-            api.listAnime(def.params()).then(function (media) {
+            var params = discoverParamsForRow(def);
+            params.page = state.discPage;
+            params.perPage = 24;
+            api.listAnime(params).then(function (media) {
                 if (seq !== state.discoverSeq) return;
-                // adult / ecchi titles are dropped by normalizeAnime
                 var items = media.map(normalizeAnime).filter(function (x) { return x && x.mediaId; });
                 row.innerHTML = '';
                 if (items.length === 0) { section.style.display = 'none'; return; }
@@ -5272,10 +5724,11 @@
             }).catch(function (e) {
                 if (seq !== state.discoverSeq) return;
                 console.warn('[Discover] ' + def.title + ' failed:', e);
-                state.discoverLoadedAt = 0;   // let the next visit retry
+                state.discoverLoadedAt = 0;
                 row.innerHTML = '<p class="empty-note">Could not load this list.</p>';
             });
         });
+        renderDiscoverPaging();
     }
 
     // ===== Settings =====
@@ -5309,9 +5762,11 @@
           options: [{ v: '34', l: 'Small' }, { v: '46', l: 'Medium' }, { v: '58', l: 'Large' }, { v: '72', l: 'Extra large' }] },
         { key: 'subPos', label: 'Subtitle position', def: '150',
           options: [{ v: '90', l: 'Low' }, { v: '150', l: 'Default' }, { v: '250', l: 'High' }] },
+        // P1: online subtitle search + provider toggle
+        { section: 'Subtitles Online' },
+        { key: 'onlineSubs', label: 'Online subtitle search', sub: 'Search OpenSubtitles / Jimaku when no sidecar exists (via Seanime extension)', options: ON_OFF, def: 'off' },
 
-        { section: 'Content' },
-        { info: true, label: 'Adult and ecchi anime', value: function () { return 'Always hidden'; } },
+        // Content: adult gate removed – ecchi/adult never shown on TV
 
         { section: 'Server' },
         { info: true, label: 'Server', value: function () { return CONFIG.serverUrl || '\u2014'; } },
@@ -5566,7 +6021,27 @@
         api.searchTorrents(pickerSearchBody(p, 'smart')).then(function (data) {
             var list = (data && data.torrents) || [];
             if (list.length || p.batch) return list;
-            // the smart search found nothing: plain text search on title + episode number
+            // second fallback: always try absolute numbering with AniDB context if available
+            var fallbackAniDb = p.aniDb || null;
+            if (!fallbackAniDb) {
+                var eps = detailEpisodes();
+                for (var i = 0; i < eps.length; i++) {
+                    var en = eps[i].episodeNumber || eps[i].number;
+                    if (en === p.episodeNumber && eps[i].aniDBEpisode) { fallbackAniDb = eps[i].aniDBEpisode; break; }
+                }
+            }
+            if (fallbackAniDb) {
+                var smartBody2 = pickerSearchBody(p, 'smart');
+                // retry smart with resolved aniDb (covers detail-Play before episode bundle loaded)
+                p.aniDb = fallbackAniDb;
+                var body2 = pickerSearchBody(p, 'smart');
+                return api.searchTorrents(body2).then(function (d2) {
+                    var l2 = (d2 && d2.torrents) || [];
+                    if (l2.length) return l2;
+                    return api.searchTorrents(pickerSearchBody(p, 'simple', p.anime.title + ' ' + pad2(p.episodeNumber)))
+                        .then(function (d3) { return (d3 && d3.torrents) || []; });
+                });
+            }
             return api.searchTorrents(pickerSearchBody(p, 'simple', p.anime.title + ' ' + pad2(p.episodeNumber)))
                 .then(function (d2) { return (d2 && d2.torrents) || []; });
         }).then(function (list) {
@@ -5828,6 +6303,8 @@
             var navHome = $('#nav-home');
             var navDiscover = $('#nav-discover');
             var navSchedule = $('#nav-schedule');
+            var navQueue = $('#nav-queue');
+            var navProfile = $('#nav-profile');
             var settingsBtn = $('#settings-btn');
 
             function focusBelowHeader() {
@@ -5846,7 +6323,7 @@
             }
 
             // left-to-right order of everything focusable in the header
-            var headerOrder = [navHome, navDiscover, navSchedule, searchInput, searchBtn, settingsBtn, logoutBtn];
+            var headerOrder = [navHome, navDiscover, navSchedule, navQueue, navProfile, searchInput, searchBtn, settingsBtn, logoutBtn];
             function moveHeaderFocus(from, delta) {
                 var next = headerOrder[headerOrder.indexOf(from) + delta];
                 if (next) next.focus();
@@ -5879,6 +6356,8 @@
             navHome.addEventListener('click', function () { setView('home'); });
             navDiscover.addEventListener('click', function () { setView('discover'); });
             navSchedule.addEventListener('click', function () { setView('schedule'); });
+            navQueue.addEventListener('click', function () { setView('queue'); });
+            navProfile.addEventListener('click', function () { setView('profile'); });
             settingsBtn.addEventListener('click', openSettings);
 
             applySubtitleStyle();
