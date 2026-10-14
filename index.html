@@ -61,6 +61,8 @@
                         <button id="nav-home" class="nav-btn active" tabindex="0">Home</button>
                         <button id="nav-discover" class="nav-btn" tabindex="0">Discover</button>
                         <button id="nav-schedule" class="nav-btn" tabindex="0">Schedule</button>
+                        <button id="nav-queue" class="nav-btn" tabindex="0">Queue</button>
+                        <button id="nav-profile" class="nav-btn" tabindex="0">Profile</button>
                     </nav>
                 </div>
                 <div class="header-search" id="header-search">
@@ -109,11 +111,14 @@
                     </div>
                 </section>
 
-                <!-- Library Section -->
-                <section class="content-section">
-                    <h2 class="section-title">My Library</h2>
+                <!-- Recently Added to Library -->
+                <section class="content-section" id="library-section">
+                    <h2 class="section-title">Recently Added to Library</h2>
                     <div class="card-row" id="library-row"></div>
                 </section>
+
+                <!-- Custom Lists -->
+                <div id="custom-lists"></div>
 
                 <!-- Status Sections (Planning / Completed / Repeating / Paused / Dropped) -->
                 <div id="status-sections"></div>
@@ -121,12 +126,33 @@
 
             <!-- Discover (same header, different content) -->
             <main id="discover-area" style="display:none;">
+                <div id="discover-filters"></div>
                 <div id="discover-rows"></div>
+                <div id="discover-paging" class="discover-paging"></div>
             </main>
 
             <!-- Airing schedule -->
             <main id="schedule-area" style="display:none;">
                 <div id="schedule-rows"></div>
+            </main>
+
+            <!-- Queue / Downloads -->
+            <main id="queue-area" style="display:none;">
+                <div class="content-section">
+                    <h2 class="section-title">Queue</h2>
+                    <p class="empty-note" id="queue-note" style="display:none;"></p>
+                    <div id="queue-rows"></div>
+                </div>
+            </main>
+
+            <!-- Profile / Stats -->
+            <main id="profile-area" style="display:none;">
+                <div class="content-section">
+                    <h2 class="section-title">Profile</h2>
+                    <div id="profile-card"></div>
+                    <div id="profile-stats"></div>
+                    <p class="empty-note" id="profile-note" style="display:none;"></p>
+                </div>
             </main>
 
             <footer id="nav-hint">
@@ -157,6 +183,12 @@
                     </div>
                     <h3 class="detail-section-title">Episodes <span class="detail-hint">OK choose a torrent</span></h3>
                     <div class="episode-list" id="episode-list"></div>
+                    <h3 class="detail-section-title" id="cast-title" style="display:none;">Cast</h3>
+                    <div class="cast-row" id="detail-cast"></div>
+                    <h3 class="detail-section-title" id="staff-title" style="display:none;">Staff</h3>
+                    <div class="cast-row" id="detail-staff"></div>
+                    <h3 class="detail-section-title" id="relations-title" style="display:none;">Related</h3>
+                    <div class="card-row" id="detail-relations"></div>
                     <h3 class="detail-section-title" id="recs-title" style="display:none;">More like this</h3>
                     <div class="card-row" id="detail-recs"></div>
                 </div>
