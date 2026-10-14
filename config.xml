@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://seanime.tv/client"
+        version="1.0.0"
+        viewmodes="maximized">
+
+    <tizen:application id="MadeByAhm5.SeanimeTVClient"
+                       package="MadeByAhm5"
+                       required_version="4.0"/>
+
+    <content src="index.html"/>
+
+    <feature name="http://tizen.org/feature/screen.size.all"/>
+    <feature name="http://tizen.org/feature/network.internet"/>
+    <feature name="http://tizen.org/feature/multimedia.player"/>
+    <feature name="http://tizen.org/feature/webkit.hwaccel"/>
+
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://developer.samsung.com/privilege/avplay"/>
+
+    <access origin="*" subdomains="true"/>
+
+    <tizen:setting screen-orientation="landscape"
+                   context-menu="disable"
+                   background-support="disable"
+                   encryption="disable"
+                   install-location="auto"
+                   hwkey-event="enable"/>
+
+    <name>Seanime TV</name>
+    <description>Seanime client for Tizen TV with AVPlay and torrent streaming</description>
+    <author href="https://github.com/5rahim/seanime" email="noreply@seanime.app">
+        Seanime Community
+    </author>
+
+    <icon src="icon.png"/>
+    <license href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</license>
+
+</widget>
