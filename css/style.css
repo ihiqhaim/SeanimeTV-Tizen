@@ -1738,3 +1738,25 @@ body {
 .profile-stats > div + div { margin-left:16px; }
 .profile-stat-val { font-size:28px; font-weight:700; color:#fff; }
 .profile-stat-label { font-size:15px; color:#8888aa; margin-top:6px; }
+.profile-bar-track { display:flex; height:10px; border-radius:999px; overflow:hidden; background:#1a1a28; margin-top:10px; }
+.profile-bar-seg { height:100%; }
+.profile-bar-legend { display:flex; margin-top:10px; font-size:14px; color:#a0a0b8; }
+.profile-bar-legend span { margin-right:18px; }
+.profile-bar-legend span:last-child { margin-right:0; }
+.profile-health { display:flex; align-items:center; padding:14px 20px; background:#12121a; border-radius:18px; margin-top:16px; font-size:16px; color:#c0c0d0; }
+.profile-health span + span { margin-left:16px; }
+.profile-activity-row { display:flex; align-items:center; padding:12px 16px; background:#12121a; border-radius:12px; margin-bottom:8px; }
+.profile-activity-row:focus { box-shadow:0 0 0 3px #8b5cf6; background:#1a1a28; }
+.profile-activity-thumb { width:64px; height:90px; object-fit:cover; border-radius:8px; background:#1a1a28; margin-right:14px; flex:0 0 auto; }
+.profile-activity-title { font-size:16px; font-weight:600; color:#e8e8f0; }
+.profile-activity-meta { font-size:14px; color:#8888aa; margin-top:4px; }
+.profile-actions { display:flex; margin-top:18px; }
+.profile-actions .profile-action + .profile-action { margin-left:12px; }
+.profile-action { padding:12px 22px; font-size:16px; font-weight:600; background:#12121a; border:2px solid #2a2a3a; border-radius:999px; color:#a0a0b8; outline:none; }
+.profile-action:focus { color:#fff; border-color:#8b5cf6; box-shadow:0 0 16px rgba(139,92,246,0.5); }
+.profile-action--danger:focus { border-color:#ef4444; box-shadow:0 0 0 4px rgba(239,68,68,0.4); }
+.profile-liststats { display:flex; margin-top:18px; }
+.profile-liststats > div { flex:1; background:#12121a; border-radius:16px; padding:20px; text-align:center; }
+.profile-liststats > div + div { margin-left:12px; }
+.profile-liststats-val { font-size:24px; font-weight:700; color:#fff; }
+.profile-liststats-label { font-size:13px; color:#8888aa; margin-top:4px; text-transform:uppercase; letter-spacing:1px; }
