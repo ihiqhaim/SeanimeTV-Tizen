@@ -256,6 +256,8 @@
         upNext: null,
         listProgress: {},
         listProgressLoaded: false,
+        profileStats: null,          // per-status counts from the AniList collection (see profileComputeStats)
+        profileStatsLoading: false,
         needsRefresh: false,
         // audio / subtitle tracks
         tracks: { audio: [], text: [] },
@@ -1499,7 +1501,7 @@
                 rows.push(fRow);
             }
         }
-        var nodes = area.querySelectorAll('#hero-play-btn, .card-row, .cast-row, #queue-rows, #profile-card, #profile-stats');
+        var nodes = area.querySelectorAll('#hero-play-btn, .card-row, .cast-row, #queue-rows, #profile-card, #profile-stats, #profile-bar, #profile-health, #profile-activity, #profile-cw, #profile-prefs, #profile-actions');
         for (var i = 0; i < nodes.length; i++) {
             var n = nodes[i], items = [];
             if (n.id === 'hero-play-btn') {
@@ -1509,7 +1511,7 @@
                 for (var j = 0; j < n.children.length; j++) {
                     if (n.children[j].classList.contains('queue-item')) items.push(n.children[j]);
                 }
-            } else if (n.id === 'profile-card' || n.id === 'profile-stats') {
+            } else if (n.id === 'profile-card' || n.id === 'profile-stats' || n.id === 'profile-bar' || n.id === 'profile-health' || n.id === 'profile-prefs' || n.id === 'profile-actions') {
                 if (n.children.length) {
                     for (var k = 0; k < n.children.length; k++) {
                         var c = n.children[k];
@@ -1518,7 +1520,13 @@
                             if (focusable) items.push(focusable);
                         }
                     }
-                    if (!items.length && n.offsetWidth) items.push(n);
+                    if (!items.length && n.offsetWidth) {
+                        // profile sections that are focusable as a whole (health/prefs)
+                        if (n.tabIndex >= 0) items.push(n);
+                        else if (n.offsetWidth) items.push(n);
+                    }
+                } else if (n.tabIndex >= 0) {
+                    items.push(n);
                 }
             } else if (n.classList.contains('cast-row')) {
                 for (var j = 0; j < n.children.length; j++) {
@@ -1561,10 +1569,15 @@
         var activeCls = active.classList.contains('anime-card') ? 'anime-card'
                       : active.classList.contains('cast-card') ? 'cast-card'
                       : active.classList.contains('queue-item') ? 'queue-item'
-                      : active.classList.contains('df-chip') ? 'df-chip' : null;
+                      : active.classList.contains('df-chip') ? 'df-chip'
+                      : active.classList.contains('profile-action') ? 'profile-action'
+                      : active.classList.contains('profile-activity-row') ? 'profile-activity-row' : null;
         var activeInRow = activeCls && active.parentNode &&
                          (active.parentNode.classList.contains('card-row') ||
                           active.parentNode.id === 'discover-filters' ||
+                          active.parentNode.id === 'profile-activity' ||
+                          active.parentNode.id === 'profile-cw' ||
+                          active.parentNode.id === 'profile-actions' ||
                           active.parentNode.classList.contains('cast-row') ||
                           active.parentNode.id === 'queue-rows');
         if ((keyCode === K.LEFT || keyCode === K.RIGHT) && activeCls && activeInRow) {
@@ -2156,6 +2169,203 @@
         return card;
     }
 
+    // ===== Profile helpers =====
+    var PROFILE_STATUS = ['CURRENT','PLANNING','COMPLETED','PAUSED','DROPPED','REPEATING'];
+    var PROFILE_STATUS_COLORS = { CURRENT:'#8b5cf6', PLANNING:'#22c55e', COMPLETED:'#3b82f6', PAUSED:'#f59e0b', DROPPED:'#ef4444', REPEATING:'#a78bfa' };
+    var PROFILE_STATUS_LABELS = { CURRENT:'Watching', PLANNING:'Planning', COMPLETED:'Completed', PAUSED:'Paused', DROPPED:'Dropped', REPEATING:'Repeating' };
+    function profileListStatusOf(item) {
+        // Prefer authoritative listData.status (AniList), then _listStatus/_listType, then state.listEntries by mediaId
+        if (item && item.listData && item.listData.status) return String(item.listData.status).toUpperCase();
+        if (item && item._listStatus) return String(item._listStatus).toUpperCase();
+        if (item && item._listType) return String(item._listType).toUpperCase();
+        if (item && item.mediaId && state.listEntries && state.listEntries[item.mediaId] && state.listEntries[item.mediaId].status) {
+            return String(state.listEntries[item.mediaId].status).toUpperCase();
+        }
+        if (item && item._raw && item._raw.status) return String(item._raw.status).toUpperCase();
+        if (item && item.status) return String(item.status).toUpperCase();
+        return '';
+    }
+    function profileEmptyBuckets() {
+        var by = {};
+        PROFILE_STATUS.forEach(function (k) { by[k] = { titles: 0, episodes: 0, minutes: 0, scoreSum: 0, scored: 0 }; });
+        return by;
+    }
+    // Counts per list status from the user's AniList collection (the same data the
+    // Planning / Completed / ... sections on Home are built from, adult titles hidden
+    // the same way), so the profile numbers always match those section headers.
+    function profileComputeStats(lists) {
+        var by = profileEmptyBuckets();
+        var total = { titles: 0, episodes: 0, minutes: 0 };
+        (lists || []).forEach(function (list) {
+            if (!list || list.isCustomList || !list.status) return;
+            var b = by[String(list.status).toUpperCase()];
+            if (!b) return;
+            (list.entries || []).forEach(function (en) {
+                if (!en || !en.media || !en.media.id || isAdultMedia(en.media)) return;
+                var prog = Number(en.progress) || 0;
+                var dur = Number(en.media.duration) || 24;
+                var score = normalizeScore(en.score);
+                b.titles++; b.episodes += prog; b.minutes += prog * dur;
+                if (score > 0) { b.scoreSum += score; b.scored++; }
+                total.titles++; total.episodes += prog; total.minutes += prog * dur;
+            });
+        });
+        return { byStatus: by, total: total };
+    }
+    function profileLibraryByStatus() {
+        var map = {}; PROFILE_STATUS.forEach(function (k) { map[k] = 0; });
+        if (state.profileStats) {
+            PROFILE_STATUS.forEach(function (k) { map[k] = state.profileStats.byStatus[k].titles; });
+            return map;
+        }
+        // fallback until the AniList collection has loaded: local library entries
+        var libs = state.library || [];
+        for (var i = 0; i < libs.length; i++) {
+            var st = profileListStatusOf(libs[i]);
+            if (map[st] != null) map[st]++;
+        }
+        return map;
+    }
+    function profileTotalTitles() {
+        if (state.profileStats) return state.profileStats.total.titles;
+        return (state.library || []).length;
+    }
+    function profileTimeWatched() {
+        if (state.profileStats) {
+            return { episodes: state.profileStats.total.episodes, minutes: state.profileStats.total.minutes };
+        }
+        var totalMin = 0, eps = 0;
+        var libs = state.library || [];
+        for (var i = 0; i < libs.length; i++) {
+            var ld = libs[i].listData; if (!ld || typeof ld.progress !== 'number') continue;
+            var prog = ld.progress; if (prog <= 0) continue;
+            eps += prog;
+            var dur = libs[i].episodeLength || (libs[i]._raw && libs[i]._raw.duration) || 24;
+            totalMin += prog * dur;
+        }
+        return { episodes: eps, minutes: totalMin };
+    }
+    function profileRenderHeader() {
+        var card = $('#profile-card'); if (!card) return;
+        var libs = state.library || [];
+        var titles = profileTotalTitles();
+        var tw = profileTimeWatched();
+        var hours = Math.floor(tw.minutes / 60), mins = Math.round(tw.minutes % 60);
+        // name from first library entry with userPreferred title or fallback to Seanime
+        var name = 'Seanime'; var avatar = '';
+        for (var i = 0; i < libs.length; i++) {
+            var raw = libs[i]._raw; if (!raw) continue;
+            var u = (raw.user || raw.owner || raw.viewer || raw.creator);
+            if (u && u.name) { name = u.name; avatar = (u.avatar && (u.avatar.large || u.avatar.medium)) || ''; break; }
+        }
+        // also try state.detail anime viewer
+        if (name === 'Seanime' && state.listEntries) {
+            // no viewer endpoint – keep server name
+        }
+        card.innerHTML = '';
+        var wrap = document.createElement('div'); wrap.className = 'profile-card';
+        var av = avatar ? document.createElement('img') : document.createElement('div');
+        if (avatar) { av.src = avatar; av.alt = name; }
+        else { av.style.width='96px'; av.style.height='96px'; av.style.borderRadius='50%'; av.style.background='#2a2a3a'; av.style.marginRight='20px'; av.style.display='flex'; av.style.alignItems='center'; av.style.justifyContent='center'; av.style.fontSize='36px'; av.style.fontWeight='700'; av.style.color='#a78bfa'; av.textContent = name.charAt(0).toUpperCase(); }
+        if (!avatar) { /* div already styled */ } else { av.style.width='96px'; av.style.height='96px'; av.style.borderRadius='50%'; av.style.objectFit='cover'; av.style.marginRight='20px'; av.style.background='#1a1a28'; }
+        // Tizen-safe: margin via style, not gap
+        if (!av.style.marginRight) av.style.marginRight = '20px';
+        var meta = document.createElement('div');
+        meta.innerHTML = '<div style="font-size:28px;font-weight:700">' + escapeHtml(name) + '</div>' +
+            '<div style="font-size:16px;color:#8888aa;margin-top:6px;">' + titles + ' titles · ' + tw.episodes + ' episodes · ' + hours + 'h ' + mins + 'm · ' + (connectionOnline ? 'Online' : 'Offline') + '</div>' +
+            '<div style="font-size:13px;color:#6a6a82;margin-top:4px;">' + escapeHtml(CONFIG.serverUrl || '') + '</div>';
+        wrap.appendChild(av); wrap.appendChild(meta); card.appendChild(wrap);
+    }
+    function profileRenderDistribution() {
+        var host = $('#profile-bar'); if (!host) return;
+        var byStatus = profileLibraryByStatus(); var total = 0;
+        PROFILE_STATUS.forEach(function (k) { total += byStatus[k]; });
+        host.innerHTML = ''; if (!total) return;
+        var track = document.createElement('div'); track.className = 'profile-bar-track';
+        PROFILE_STATUS.forEach(function (k) {
+            var c = byStatus[k]; if (!c) return;
+            var seg = document.createElement('div'); seg.className = 'profile-bar-seg';
+            seg.style.width = ((c / total) * 100).toFixed(1) + '%';
+            seg.style.background = PROFILE_STATUS_COLORS[k] || '#888';
+            track.appendChild(seg);
+        });
+        var legend = document.createElement('div'); legend.className = 'profile-bar-legend';
+        PROFILE_STATUS.forEach(function (k) {
+            var c = byStatus[k]; if (!c) return;
+            var sp = document.createElement('span');
+            sp.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + (PROFILE_STATUS_COLORS[k] || '#888') + ';margin-right:6px;vertical-align:middle;"></span>' + PROFILE_STATUS_LABELS[k] + ' ' + c;
+            legend.appendChild(sp);
+        });
+        host.appendChild(track); host.appendChild(legend);
+    }
+    function profileRenderActivity() {
+        var host = $('#profile-activity'), section = $('#profile-activity-section');
+        if (!host || !section) return;
+        var libs = state.library || [];
+        var sorted = libs.slice().sort(function (a, b) {
+            var ta = (a.updatedAt != null ? a.updatedAt : (a._raw && a._raw.updatedAt != null ? a._raw.updatedAt : 0)) || 0;
+            var tb = (b.updatedAt != null ? b.updatedAt : (b._raw && b._raw.updatedAt != null ? b._raw.updatedAt : 0)) || 0;
+            if (tb !== ta) return tb - ta;
+            return (b._order || 0) - (a._order || 0);
+        }).slice(0, 8);
+        host.innerHTML = ''; if (!sorted.length || !sorted[0].updatedAt && !sorted[0]._order) { section.style.display = 'none'; return; }
+        section.style.display = '';
+        sorted.forEach(function (item) {
+            var row = document.createElement('div'); row.className = 'profile-activity-row'; row.tabIndex = 0;
+            var thumb = document.createElement('img'); thumb.className = 'profile-activity-thumb';
+            thumb.alt = item.title || ''; thumb.src = item.coverImage || item.posterLarge || '';
+            var body = document.createElement('div');
+            var ld = item.listData; var prog = ld && typeof ld.progress === 'number' ? ld.progress : 0;
+            var total = item.episodes || '?';
+            body.innerHTML = '<div class="profile-activity-title">' + escapeHtml(item.title || 'Unknown') + '</div>' +
+                '<div class="profile-activity-meta">' + (ld ? escapeHtml(String(ld.status || '')) : '') + ' · Ep ' + prog + ' / ' + total + '</div>';
+            row.appendChild(thumb); row.appendChild(body);
+            row.addEventListener('click', function () { openAnimeDetail(item); });
+            row.addEventListener('keydown', function (e) { if (e.keyCode === KEY_CODES.ENTER) { e.preventDefault(); openAnimeDetail(item); } });
+            host.appendChild(row);
+        });
+    }
+    function profileRenderCW() {} // removed per request
+    function profileListStats() {
+        if (state.profileStats) return state.profileStats.byStatus;
+        // fallback until the AniList collection has loaded: local library entries
+        var out = profileEmptyBuckets();
+        var libs = state.library || [];
+        for (var i = 0; i < libs.length; i++) {
+            var st = profileListStatusOf(libs[i]);
+            if (!out[st]) continue;
+            out[st].titles++;
+            var ld = libs[i].listData;
+            if (ld && typeof ld.progress === 'number') { out[st].episodes += ld.progress; var dur = libs[i].episodeLength || 24; out[st].minutes += ld.progress * dur; }
+            if (ld && typeof ld.score === 'number' && ld.score > 0) { out[st].scoreSum += normalizeScore(ld.score); out[st].scored++; }
+        }
+        return out;
+    }
+    function profileRenderListStats() {
+        // one box per list (Watching, Planning, Completed, ...) with the number of shows in it
+        var extra = document.getElementById('profile-liststats');
+        if (!extra) {
+            extra = document.createElement('div');
+            extra.id = 'profile-liststats'; extra.className = 'profile-liststats';
+            var statsHost = $('#profile-stats');
+            if (statsHost && statsHost.parentNode) statsHost.parentNode.insertBefore(extra, statsHost.nextSibling);
+            else return;
+        }
+        var stats = profileListStats();
+        extra.innerHTML = '';
+        PROFILE_STATUS.forEach(function (k) {
+            var s = stats[k] || { titles: 0, episodes: 0, minutes: 0, scoreSum: 0, scored: 0 };
+            var box = document.createElement('div');
+            var avg = s.scored ? (s.scoreSum / s.scored).toFixed(1) : '\u2014';
+            var hrs = Math.floor(s.minutes / 60);
+            box.innerHTML = '<div class="profile-liststats-val">' + s.titles + '</div>' +
+                '<div class="profile-liststats-label">' + PROFILE_STATUS_LABELS[k] + '</div>' +
+                '<div class="profile-liststats-label" style="margin-top:6px;font-size:12px;">' + s.episodes + ' eps \u00B7 ' + hrs + 'h \u00B7 avg ' + avg + '</div>';
+            extra.appendChild(box);
+        });
+    }
+    function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
     // Library: Recently Added (sorted by updatedAt desc, most recent first; falls back to reverse insertion)
     function renderLibraryToolbar() {} // no-op: filters removed per request
     function tsOf(x) {
@@ -2374,9 +2584,11 @@
             state.listEntries = entries;
             state.blockedIds = blocked;
             state.listProgressLoaded = true;
+            state.profileStats = profileComputeStats(lists);
             renderStatusSections(lists);
             renderCustomLists();
             renderLibraryToolbar();
+            if (state.view === 'profile') profileRenderSummary();   // counts arrived while the profile is open
         }).catch(function (e) {
             console.warn('[API] AniList collection failed:', e);
         });
@@ -5497,60 +5709,39 @@
             host.appendChild(row);
         });
     }
-    function renderProfile(viewer) {
-        var note = $('#profile-note'), card = $('#profile-card'), stats = $('#profile-stats');
-        if (note) note.style.display = 'none';
-        if (!viewer) {
-            if (note) { note.textContent = 'Profile is not available from this Seanime server. View your anime list on AniList or in Seanime web/desktop.'; note.style.display = ''; }
-            else if (card) card.innerHTML = '<p class="empty-note">Profile not available on this server.</p>';
-            if (stats) stats.innerHTML = '';
-            return;
-        }
-        var u = viewer.User || viewer.user || viewer;
-        var s = u.statistics && u.statistics.anime;
-        if (card) {
-            card.innerHTML = '';
-            var wrap = document.createElement('div'); wrap.className = 'profile-card';
-            var img = document.createElement('img'); img.alt = u.name || ''; img.src = (u.avatar && (u.avatar.large || u.avatar.medium)) || '';
-            var name = document.createElement('div'); name.innerHTML = '<div style="font-size:28px;font-weight:700">' + (u.name || '') + '</div>';
-            wrap.appendChild(img); wrap.appendChild(name); card.appendChild(wrap);
-        }
-        if (stats && s) {
+    function loadQueue() {
+        renderQueue([]);
+    }
+    // Header, totals, per-list counts, distribution bar and health line.
+    // Safe to call again when the AniList collection finishes loading.
+    function profileRenderSummary() {
+        profileRenderHeader();
+        var stats = $('#profile-stats');
+        if (stats) {
             stats.innerHTML = '';
+            var tw = profileTimeWatched();
             var row = document.createElement('div'); row.className = 'profile-stats';
-            [['Count', s.count], ['Minutes', s.minutesWatched], ['Mean', s.meanScore]].forEach(function (p) {
+            var hrs = Math.floor(tw.minutes / 60);
+            [[String(profileTotalTitles()),'Titles'], [String(tw.episodes),'Episodes'], [hrs + 'h','Watched']].forEach(function (p) {
                 var box = document.createElement('div');
-                box.innerHTML = '<div class="profile-stat-val">' + (p[1] != null ? p[1] : '\u2014') + '</div><div class="profile-stat-label">' + p[0] + '</div>';
+                box.innerHTML = '<div class="profile-stat-val">' + escapeHtml(p[0]) + '</div><div class="profile-stat-label">' + escapeHtml(p[1]) + '</div>';
                 row.appendChild(box);
             });
             stats.appendChild(row);
         }
-    }
-    function loadQueue() {
-        var note = $('#queue-note');
-        if (note) { note.textContent = 'Loading…'; note.style.display = ''; }
-        api.getQueue().then(function (items) { renderQueue(items); });
-    }
-    function loadQueue() {
-        renderQueue([]);
+        profileRenderListStats();
+        profileRenderDistribution();
     }
     function loadProfile() {
-        // Seanime 3.10.3 exposes no AniList viewer endpoint – show local server info instead
         var note = $('#profile-note');
         if (note) note.style.display = 'none';
-        var card = $('#profile-card'), stats = $('#profile-stats');
-        if (stats) stats.innerHTML = '';
-        if (card) {
-            card.innerHTML = '';
-            var wrap = document.createElement('div'); wrap.className = 'profile-card';
-            var img = document.createElement('div');
-            img.style.width = '96px'; img.style.height = '96px'; img.style.borderRadius = '50%';
-            img.style.background = '#2a2a3a'; img.style.marginRight = '20px';
-            var name = document.createElement('div');
-            name.innerHTML = '<div style="font-size:22px;font-weight:700">' + (CONFIG.serverUrl || 'Seanime') + '</div><div style="font-size:16px;color:#8888aa;margin-top:6px;">' + (connectionOnline ? 'Online' : 'Offline') + ' · TV ' + (document.visibilityState || 'active') + '</div>';
-            wrap.appendChild(img); wrap.appendChild(name); card.appendChild(wrap);
+        profileRenderSummary();
+        profileRenderActivity();
+        // the per-list counts come from the AniList collection: fetch it if Home has not yet
+        if (!state.profileStats && !state.profileStatsLoading) {
+            state.profileStatsLoading = true;
+            loadStatusSections().then(function () { state.profileStatsLoading = false; });
         }
-        if (note) { note.textContent = 'Full profile (AniList stats) is not served by this Seanime version. Open Seanime web/desktop or AniList.'; note.style.display = ''; }
     }
 
     function loadSchedule(force) {
